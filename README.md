@@ -8,7 +8,7 @@
 
 ## 🔥 News:
 
-* 📢 **Jun 15th 2025**. If you're attending CVPR 2025 at Nashville, welcome to join our talk and poster session on Sunday, June 15 (the final day)!
+* 📢 **June 15th 2025**. If you're attending CVPR 2025 at Nashville, welcome to join our talk and poster session on Sunday, June 15 (the final day)!
 
   🗣️ **Oral Session 5A: Generative AI**
    📍 Karl Dean Grand Ballroom | 🕘 9:00 AM
