@@ -25,11 +25,11 @@ gdown https://drive.google.com/uc?id=1vRoDpIsrTRYZKsOMPNbPcMtFDpCT6Foy -O forwar
 
 # Testing Dataset
 echo "Downloading FFHQ test dataset..."
-gdown https://drive.google.com/uc?id=1IzbnLWPpuIw6Z2E4IKrRByh6ihDE5QLO -O datasets/test-ffhq.zip
-unzip datasets/test-ffhq.zip -d ./datasets
-rm datasets/test-ffhq.zip
+gdown https://drive.google.com/uc?id=1IzbnLWPpuIw6Z2E4IKrRByh6ihDE5QLO -O dataset/test-ffhq.zip
+unzip dataset/test-ffhq.zip -d ./dataset
+rm dataset/test-ffhq.zip
 
 echo "Downloading ImageNet test dataset..."
-gdown https://drive.google.com/uc?id=1pqVO-LYrRRL4bVxUidvy-Eb22edpuFCs -O datasets/test-imagenet.zip
-unzip datasets/test-imagenet.zip -d ./datasets
-rm datasets/test-imagenet.zip
+gdown https://drive.google.com/uc?id=1pqVO-LYrRRL4bVxUidvy-Eb22edpuFCs -O dataset/test-imagenet.zip
+unzip dataset/test-imagenet.zip -d ./dataset
+rm dataset/test-imagenet.zip
