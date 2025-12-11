@@ -58,4 +58,5 @@ transformers==4.46.3
 pytorch-lightning==1.0.8
 einops==0.8.1
 kornia==0.7.3
+gdown==5.2.0
 -e git+https://github.com/openai/CLIP.git@main#egg=clip

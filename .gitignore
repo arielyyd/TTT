@@ -123,8 +123,9 @@ db/*.sqlite
 !README.assets/*.mp4
 !README.assets/*.gif
 !dataset/demo-ffhq/*.png
-!dataset/demo-imagenet/*.jpeg
-
+!dataset/demo-imagenet/*.JPEG
+dataset/test-ffhq/*.png
+dataset/test-imagenet/*.JPEG
 
 ### Archives and compressed files ###
 *.zip
