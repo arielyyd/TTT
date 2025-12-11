@@ -127,6 +127,7 @@ db/*.sqlite
 dataset/test-ffhq/*.png
 dataset/test-imagenet/*.JPEG
 outputs/
+results/
 
 ### Archives and compressed files ###
 *.zip
