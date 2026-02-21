@@ -65,8 +65,7 @@ class ImageDataset(DiffusionData):
     def __init__(self, root='dataset/demo', resolution=256, device='cuda', start_id=None, end_id=None):
         # Define the file extensions to search for
         extensions = ['*.jpg', '*.JPG', '*.jpeg', '*.JPEG', '*.png', '*.PNG']
-        self.data = [file for ext in extensions for file in Path(root).rglob(ext)]
-        self.data = sorted(self.data)
+        self.data = sorted(set(file for ext in extensions for file in Path(root).rglob(ext)))
 
         # Subset the dataset
         self.data = self.data[start_id: end_id]

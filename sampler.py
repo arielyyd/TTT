@@ -9,8 +9,17 @@ from forward_operator import LatentWrapper
 
 
 def get_sampler(**kwargs):
-    latent = kwargs['latent']
-    kwargs.pop('latent')
+    latent = kwargs.pop('latent')
+    sampler_type = kwargs.pop('type', 'daps')
+
+    if sampler_type == 'dps':
+        # DPS doesn't use mcmc_sampler_config
+        kwargs.pop('mcmc_sampler_config', None)
+        if latent:
+            return LatentDPS(**kwargs)
+        return DPS(**kwargs)
+
+    # Default: DAPS
     if latent:
         return LatentDAPS(**kwargs)
     return DAPS(**kwargs)
@@ -206,3 +215,187 @@ class LatentDAPS(DAPS):
                 self._record(xt, x0y, x0hat, sigma, x0hat_results, x0y_results)
         return xt
 
+
+class DPS(nn.Module):
+    """
+    Diffusion Posterior Sampling (Chung et al. 2023).
+
+    Runs a single guided reverse diffusion chain using PF-ODE Euler steps
+    with gradient-based measurement guidance.
+    """
+
+    def __init__(self, scheduler_config, guidance_scale=1.0):
+        super().__init__()
+        self.scheduler = get_diffusion_scheduler(**scheduler_config)
+        self.guidance_scale = guidance_scale
+
+    def sample(self, model, x_start, operator, measurement, evaluator=None, record=False, verbose=False, **kwargs):
+        if record:
+            self.trajectory = Trajectory()
+
+        sigma_steps = self.scheduler.sigma_steps
+        num_steps = len(sigma_steps) - 1  # last entry is 0
+        pbar = tqdm.trange(num_steps) if verbose else range(num_steps)
+        xt = x_start
+
+        for step in pbar:
+            sigma = sigma_steps[step]
+            sigma_next = sigma_steps[step + 1]
+            t = self.scheduler.get_sigma_inv(sigma)
+            t_next = self.scheduler.get_sigma_inv(sigma_next)
+            dt = t_next - t
+            st = self.scheduler.get_scaling(t)
+            dst = self.scheduler.get_scaling_derivative(t)
+            dsigma = self.scheduler.get_sigma_derivative(t)
+
+            # --- guidance gradient (with grad tracking through model) ---
+            # Enable requires_grad on model params so checkpointed layers
+            # can compute gradients w.r.t. input through the saved params.
+            model.requires_grad_(True)
+            xt_in = xt.detach().requires_grad_(True)
+            x0hat = model.tweedie(xt_in / st, sigma)
+            loss_per_sample = operator.loss(x0hat, measurement)  # [B]
+            grad_xt = torch.autograd.grad(loss_per_sample.sum(), xt_in)[0]
+            model.requires_grad_(False)
+
+            # Per-sample normalization: rho / ||y - A(x0hat)||
+            with torch.no_grad():
+                norm_factor = loss_per_sample.sqrt()  # [B]
+                norm_factor = norm_factor.view(-1, *([1] * (grad_xt.ndim - 1)))
+                norm_factor = norm_factor.clamp(min=1e-8)
+                normalized_grad = grad_xt / norm_factor
+
+            # --- PF-ODE Euler step (no grad needed) ---
+            with torch.no_grad():
+                score = (x0hat.detach() - xt / st) / sigma ** 2
+                deriv = dst / st * xt - st * dsigma * sigma * score
+                xt_next = xt + dt * deriv
+
+                # Apply guidance
+                xt = xt_next - self.guidance_scale * normalized_grad
+
+                # NaN guard
+                if torch.isnan(xt).any():
+                    if verbose:
+                        print(f'NaN detected at step {step}, returning early.')
+                    break
+
+            # --- evaluation ---
+            x0hat_eval = x0hat.detach()
+            x0hat_results = x0y_results = {}
+            if evaluator and 'gt' in kwargs:
+                with torch.no_grad():
+                    gt = kwargs['gt']
+                    x0hat_results = evaluator(gt, measurement, x0hat_eval)
+                    x0y_results = x0hat_results  # DPS has no separate x0y
+
+                if verbose:
+                    main_eval_fn_name = evaluator.main_eval_fn_name
+                    pbar.set_postfix({
+                        'x0hat_' + main_eval_fn_name: f"{x0hat_results[main_eval_fn_name].item():.2f}",
+                    })
+            if record:
+                self._record(xt, x0hat_eval, x0hat_eval, sigma, x0hat_results, x0y_results)
+
+        return xt
+
+    def _record(self, xt, x0y, x0hat, sigma, x0hat_results, x0y_results):
+        self.trajectory.add_tensor('xt', xt)
+        self.trajectory.add_tensor('x0y', x0y)
+        self.trajectory.add_tensor('x0hat', x0hat)
+        self.trajectory.add_value('sigma', sigma)
+        for name in x0hat_results.keys():
+            self.trajectory.add_value(f'x0hat_{name}', x0hat_results[name])
+        for name in x0y_results.keys():
+            self.trajectory.add_value(f'x0y_{name}', x0y_results[name])
+
+    def get_start(self, batch_size, model):
+        device = next(model.parameters()).device
+        in_shape = model.get_in_shape()
+        x_start = torch.randn(batch_size, *in_shape, device=device) * self.scheduler.get_prior_sigma()
+        return x_start
+
+
+class LatentDPS(DPS):
+    """
+    Latent-space Diffusion Posterior Sampling.
+
+    Gradient chain goes through the decoder: z_t -> tweedie -> z0hat -> decode -> x0hat -> operator -> loss.
+    """
+
+    def sample(self, model, z_start, operator, measurement, evaluator=None, record=False, verbose=False, **kwargs):
+        if record:
+            self.trajectory = Trajectory()
+
+        sigma_steps = self.scheduler.sigma_steps
+        num_steps = len(sigma_steps) - 1
+        pbar = tqdm.trange(num_steps) if verbose else range(num_steps)
+        zt = z_start
+
+        for step in pbar:
+            sigma = sigma_steps[step]
+            sigma_next = sigma_steps[step + 1]
+            t = self.scheduler.get_sigma_inv(sigma)
+            t_next = self.scheduler.get_sigma_inv(sigma_next)
+            dt = t_next - t
+            st = self.scheduler.get_scaling(t)
+            dst = self.scheduler.get_scaling_derivative(t)
+            dsigma = self.scheduler.get_sigma_derivative(t)
+
+            # --- guidance gradient (grad through model + decoder) ---
+            # Enable requires_grad on model params so checkpointed layers
+            # can compute gradients w.r.t. input through the saved params.
+            model.requires_grad_(True)
+            zt_in = zt.detach().requires_grad_(True)
+            z0hat = model.tweedie(zt_in / st, sigma)
+            x0hat = model.decode(z0hat)
+            loss_per_sample = operator.loss(x0hat, measurement)  # [B]
+            grad_zt = torch.autograd.grad(loss_per_sample.sum(), zt_in)[0]
+            model.requires_grad_(False)
+
+            # Per-sample normalization
+            with torch.no_grad():
+                norm_factor = loss_per_sample.sqrt().view(-1, *([1] * (grad_zt.ndim - 1)))
+                norm_factor = norm_factor.clamp(min=1e-8)
+                normalized_grad = grad_zt / norm_factor
+
+            # --- PF-ODE Euler step in latent space ---
+            with torch.no_grad():
+                score = (z0hat.detach() - zt / st) / sigma ** 2
+                deriv = dst / st * zt - st * dsigma * sigma * score
+                zt_next = zt + dt * deriv
+
+                # Apply guidance
+                zt = zt_next - self.guidance_scale * normalized_grad
+
+                # NaN guard
+                if torch.isnan(zt).any():
+                    if verbose:
+                        print(f'NaN detected at step {step}, returning early.')
+                    break
+
+            # --- decode for evaluation/recording ---
+            with torch.no_grad():
+                x0hat_eval = model.decode(z0hat.detach())
+                xt = model.decode(zt)
+
+            # --- evaluation ---
+            x0hat_results = x0y_results = {}
+            if evaluator and 'gt' in kwargs:
+                with torch.no_grad():
+                    gt = kwargs['gt']
+                    x0hat_results = evaluator(gt, measurement, x0hat_eval)
+                    x0y_results = x0hat_results
+
+                if verbose:
+                    main_eval_fn_name = evaluator.main_eval_fn_name
+                    pbar.set_postfix({
+                        'x0hat_' + main_eval_fn_name: f"{x0hat_results[main_eval_fn_name].item():.2f}",
+                    })
+            if record:
+                self._record(xt, x0hat_eval, x0hat_eval, sigma, x0hat_results, x0y_results)
+
+        # Return data-space result
+        with torch.no_grad():
+            xt = model.decode(zt)
+        return xt

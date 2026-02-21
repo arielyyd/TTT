@@ -180,3 +180,5 @@ docker-compose.override.yml
 
 *.pt
 *.pth
+project_agent_bundle/
+.venv/
