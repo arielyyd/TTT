@@ -1,9 +1,10 @@
 #!/bin/bash
-# LR sweep for TTT-LoRA direct method on inv-scatter
-# Runs 3 learning rates: 1e-3, 3e-3, 1e-2
-# Uses GPU 0 and GPU 1 in parallel
+# HP sweep: train_pct x lambda_kl
+# Fixed: lr=3e-3, lora_rank=64, num_steps=50, method=direct
+# 4 runs: (train_pct=10,20) x (lambda_kl=0.0, 0.01)
+# Runs 2 at a time on GPUs 0+1
 #
-# Usage: bash inversebench/run_sweep.sh
+# Usage: bash run_sweep.sh
 
 set -e
 
@@ -13,54 +14,53 @@ source .venv/bin/activate
 
 mkdir -p exps/ttt
 
-echo "=== LR Sweep: direct method, train_pct=10, num_steps=50, K=1 ==="
-echo "Started: $(date)"
+COMMON="problem=inv-scatter pretrain=inv-scatter +ttt.method=direct +ttt.lr=3e-3 +ttt.lora_rank=64 +ttt.num_epochs=10 +ttt.diffusion_scheduler_config.num_steps=50"
+
+echo "=== HP Sweep: train_pct x lambda_kl ==="
+echo "  Fixed: lr=3e-3, rank=64, num_steps=50, direct"
+echo "  Started: $(date)"
 echo ""
 
-# Run lr=1e-3 and lr=3e-3 in parallel on GPUs 0 and 1
-echo ">>> Launching lr=1e-3 on GPU 0 and lr=3e-3 on GPU 1..."
+# --- Batch 1: train_pct=10, kl=0.0 (GPU 0) + train_pct=10, kl=0.01 (GPU 1) ---
+# We already have train_pct=10, kl=0.01 from LR sweep, but dir name was different.
+# Re-run with new naming to be consistent.
 
-CUDA_VISIBLE_DEVICES=0 python train_ttt.py \
-    problem=inv-scatter pretrain=inv-scatter \
-    +ttt.method=direct \
-    +ttt.train_pct=10 \
-    +ttt.lr=1e-3 \
-    +ttt.lora_rank=64 \
-    +ttt.num_epochs=10 \
-    +ttt.diffusion_scheduler_config.num_steps=50 \
-    2>&1 | tee exps/ttt/sweep_lr1e-3.log &
+echo ">>> Batch 1: train_pct=10 x kl={0.0, 0.01}"
+
+CUDA_VISIBLE_DEVICES=0 python train_ttt.py $COMMON \
+    +ttt.train_pct=10 +ttt.lambda_kl=0.0 \
+    2>&1 | tee exps/ttt/sweep_pct10_kl0.0.log &
 PID1=$!
 
-CUDA_VISIBLE_DEVICES=1 python train_ttt.py \
-    problem=inv-scatter pretrain=inv-scatter \
-    +ttt.method=direct \
-    +ttt.train_pct=10 \
-    +ttt.lr=3e-3 \
-    +ttt.lora_rank=64 \
-    +ttt.num_epochs=10 \
-    +ttt.diffusion_scheduler_config.num_steps=50 \
-    2>&1 | tee exps/ttt/sweep_lr3e-3.log &
+CUDA_VISIBLE_DEVICES=1 python train_ttt.py $COMMON \
+    +ttt.train_pct=10 +ttt.lambda_kl=0.01 \
+    2>&1 | tee exps/ttt/sweep_pct10_kl0.01.log &
 PID2=$!
 
-# Wait for both to finish
 wait $PID1
-echo ">>> lr=1e-3 finished"
+echo ">>> pct=10 kl=0.0 finished"
 wait $PID2
-echo ">>> lr=3e-3 finished"
+echo ">>> pct=10 kl=0.01 finished"
 
-# Run lr=1e-2 on GPU 0
+# --- Batch 2: train_pct=20, kl=0.0 (GPU 0) + train_pct=20, kl=0.01 (GPU 1) ---
 echo ""
-echo ">>> Launching lr=1e-2 on GPU 0..."
-CUDA_VISIBLE_DEVICES=0 python train_ttt.py \
-    problem=inv-scatter pretrain=inv-scatter \
-    +ttt.method=direct \
-    +ttt.train_pct=10 \
-    +ttt.lr=1e-2 \
-    +ttt.lora_rank=64 \
-    +ttt.num_epochs=10 \
-    +ttt.diffusion_scheduler_config.num_steps=50 \
-    2>&1 | tee exps/ttt/sweep_lr1e-2.log
+echo ">>> Batch 2: train_pct=20 x kl={0.0, 0.01}"
+
+CUDA_VISIBLE_DEVICES=0 python train_ttt.py $COMMON \
+    +ttt.train_pct=20 +ttt.lambda_kl=0.0 \
+    2>&1 | tee exps/ttt/sweep_pct20_kl0.0.log &
+PID3=$!
+
+CUDA_VISIBLE_DEVICES=1 python train_ttt.py $COMMON \
+    +ttt.train_pct=20 +ttt.lambda_kl=0.01 \
+    2>&1 | tee exps/ttt/sweep_pct20_kl0.01.log &
+PID4=$!
+
+wait $PID3
+echo ">>> pct=20 kl=0.0 finished"
+wait $PID4
+echo ">>> pct=20 kl=0.01 finished"
 
 echo ""
 echo "=== Sweep complete: $(date) ==="
-echo "Check results in exps/ttt/inverse-scatter-linear_direct_10pct*/"
+echo "Results in exps/ttt/"

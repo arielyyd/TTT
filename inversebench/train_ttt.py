@@ -692,7 +692,7 @@ def main(config: DictConfig):
 
     # --- Output directory ---
     problem_name = config.problem.get("name", "unknown")
-    root = Path(save_dir) / f"{problem_name}_{method}_{train_pct}pct"
+    root = Path(save_dir) / f"{problem_name}_{method}_{train_pct}pct_lr{lr}_kl{lambda_kl}"
     root.mkdir(parents=True, exist_ok=True)
 
     # --- Logger ---
