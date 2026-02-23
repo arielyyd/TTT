@@ -142,16 +142,19 @@ class LoRAConv1dConditioned(nn.Module):
 
     def forward(self, x):
         out = self.original_conv(x)
-        y_2d = self.store.measurement if self.store is not None else None
-        if self.y_channels > 0 and y_2d is not None:
+        if self.y_channels > 0:
             B, C, L = x.shape
             H = W = int(L ** 0.5)
-            y_resized = F.interpolate(y_2d, (H, W), mode='bilinear',
-                                      align_corners=False)
+            y_2d = self.store.measurement if self.store is not None and self.store.measurement is not None else None
+            if y_2d is not None:
+                y_resized = F.interpolate(y_2d, (H, W), mode='bilinear',
+                                          align_corners=False)
+            else:
+                y_resized = x.new_zeros(B, self.y_channels, H, W)
             y_flat = y_resized.flatten(2)        # [B, y_channels, L]
             xy = torch.cat([x, y_flat], dim=1)   # [B, C + y_channels, L]
             out = out + self.scaling * self.lora_up(self.lora_down(xy))
-        elif self.y_channels == 0:
+        else:
             out = out + self.scaling * self.lora_up(self.lora_down(x))
         return out
 
@@ -185,14 +188,17 @@ class LoRAConv2dConditioned(nn.Module):
 
     def forward(self, x):
         out = self.original_conv(x)
-        y_2d = self.store.measurement if self.store is not None else None
-        if self.y_channels > 0 and y_2d is not None:
+        if self.y_channels > 0:
             B, C, H, W = x.shape
-            y_resized = F.interpolate(y_2d, (H, W), mode='bilinear',
-                                      align_corners=False)
+            y_2d = self.store.measurement if self.store is not None and self.store.measurement is not None else None
+            if y_2d is not None:
+                y_resized = F.interpolate(y_2d, (H, W), mode='bilinear',
+                                          align_corners=False)
+            else:
+                y_resized = x.new_zeros(B, self.y_channels, H, W)
             xy = torch.cat([x, y_resized], dim=1)
             out = out + self.scaling * self.lora_up(self.lora_down(xy))
-        elif self.y_channels == 0:
+        else:
             out = out + self.scaling * self.lora_up(self.lora_down(x))
         return out
 
@@ -234,10 +240,14 @@ class LoRACustomConv2dConditioned(nn.Module):
 
     def forward(self, x):
         out = self.original_conv(x)  # preserves up/down resampling
-        if self.y_channels > 0 and self.store is not None and self.store.measurement is not None:
+        if self.y_channels > 0:
             B, C, H, W = x.shape
-            y_resized = F.interpolate(self.store.measurement, (H, W),
-                                      mode='bilinear', align_corners=False)
+            y_2d = self.store.measurement if self.store is not None and self.store.measurement is not None else None
+            if y_2d is not None:
+                y_resized = F.interpolate(y_2d, (H, W),
+                                          mode='bilinear', align_corners=False)
+            else:
+                y_resized = x.new_zeros(B, self.y_channels, H, W)
             xy = torch.cat([x, y_resized], dim=1)
             correction = self.scaling * self.lora_up(self.lora_down(xy))
         else:

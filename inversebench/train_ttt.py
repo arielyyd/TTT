@@ -921,6 +921,8 @@ def _train_direct(net, scheduler, forward_op, optimizer, lora_modules,
 
         for i, img_idx in enumerate(pbar):
             y_i = measurements[img_idx:img_idx+1]
+            if store is not None:
+                store.set(y_i)
             x = torch.randn(1, net.img_channels, net.img_resolution,
                              net.img_resolution, device=device) * scheduler.sigma_max
             if prefix_steps > 0:
@@ -929,9 +931,6 @@ def _train_direct(net, scheduler, forward_op, optimizer, lora_modules,
 
             sigma_b = scheduler.sigma_steps[prefix_steps]
             scaling_b = scheduler.scaling_steps[prefix_steps]
-
-            if store is not None:
-                store.set(y_i)
             net.requires_grad_(True)
             x0_hat = net(x / scaling_b, torch.as_tensor(sigma_b).to(device))
 
