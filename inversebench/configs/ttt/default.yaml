@@ -4,7 +4,7 @@ train_pct: 10         # % of training set to use (rest held out for eval)
 # LoRA
 lora_rank: 64
 lora_alpha: 1.0
-y_channels: 0         # 0 = unconditioned (safe for all problems)
+y_channels: 0         # 0 = unconditioned, >0 = conditioned (encoder projects obs to spatial features)
 target_modules: all   # attention | resblock | all
 
 # Shared training

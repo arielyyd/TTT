@@ -692,14 +692,15 @@ def main(config: DictConfig):
 
     # --- Output directory ---
     problem_name = config.problem.get("name", "unknown")
-    root = Path(save_dir) / f"{problem_name}_{method}_{train_pct}pct_lr{lr}_kl{lambda_kl}"
+    ycond_tag = f"_ych{y_channels}" if y_channels > 0 else ""
+    root = Path(save_dir) / f"{problem_name}_{method}_{train_pct}pct_lr{lr}_kl{lambda_kl}{ycond_tag}"
     root.mkdir(parents=True, exist_ok=True)
 
     # --- Logger ---
     logger = Logger(root)
     logger.log(f"TTT-LoRA training")
     logger.log(f"  method={method}, train_pct={train_pct}%, rank={lora_rank}, "
-               f"epochs={num_epochs}, lr={lr}")
+               f"epochs={num_epochs}, lr={lr}, y_channels={y_channels}")
     logger.log(f"  stability: warmup={warmup_steps}, wd={weight_decay}, "
                f"ema={ema_decay}, spike_thresh={loss_spike_threshold}, "
                f"patience={patience}")
@@ -784,13 +785,19 @@ def main(config: DictConfig):
                     f"{(advantages > 0).sum()} positive advantage")
 
     # --- 5. Apply LoRA ---
+    obs_shape = tuple(measurements.shape[1:]) if y_channels > 0 else None
     lora_modules, store = apply_conditioned_lora(
         net, rank=lora_rank, alpha=lora_alpha, y_channels=y_channels,
-        target_modules=target_modules)
-    lora_params = get_lora_params(lora_modules)
+        target_modules=target_modules, obs_shape=obs_shape,
+        img_resolution=net.img_resolution)
+    lora_params = get_lora_params(lora_modules, store=store)
     optimizer = torch.optim.AdamW(lora_params, lr=lr, weight_decay=weight_decay)
     n_params = sum(p.numel() for p in lora_params)
-    logger.log(f"LoRA: {len(lora_modules)} modules, {n_params:,} params")
+    n_lora_only = sum(p.numel() for m in lora_modules
+                      for p in list(m.lora_down.parameters()) + list(m.lora_up.parameters()))
+    n_enc = n_params - n_lora_only
+    enc_info = f" (+ {n_enc:,} encoder params)" if n_enc > 0 else ""
+    logger.log(f"LoRA: {len(lora_modules)} modules, {n_params:,} params{enc_info}")
 
     # --- 5b. Stability objects ---
     if method == "direct":
@@ -857,7 +864,8 @@ def main(config: DictConfig):
               metadata={"method": method, "problem": problem_name,
                         "train_pct": train_pct, "epochs": num_epochs,
                         "lora_rank": lora_rank, "lora_alpha": lora_alpha,
-                        "ema": ema.enabled})
+                        "ema": ema.enabled},
+              store=store)
     logger.log(f"Saved lora_final.pt" + (" (EMA weights)" if ema.enabled else ""))
 
     # --- 8. Evaluate (with EMA weights applied) ---
@@ -990,10 +998,12 @@ def _train_direct(net, scheduler, forward_op, optimizer, lora_modules,
             step_losses=step_losses, grad_norms=monitor.grad_norms)
 
         save_lora(lora_modules, str(root / f"lora_epoch{epoch+1}.pt"),
-                  metadata={"epoch": epoch+1, "avg_loss": avg, "time": epoch_time})
+                  metadata={"epoch": epoch+1, "avg_loss": avg, "time": epoch_time},
+                  store=store)
         if is_best:
             save_lora(lora_modules, str(root / "lora_best.pt"),
-                      metadata={"epoch": epoch+1, "avg_loss": avg})
+                      metadata={"epoch": epoch+1, "avg_loss": avg},
+                      store=store)
         save_loss_curves(step_losses, epoch_avg_losses, monitor.grad_norms, root)
 
         if monitor.should_stop():
@@ -1071,10 +1081,12 @@ def _train_dpo(net, optimizer, lora_modules, lora_params, store,
             step_losses=step_losses, grad_norms=monitor.grad_norms)
 
         save_lora(lora_modules, str(root / f"lora_epoch{epoch+1}.pt"),
-                  metadata={"epoch": epoch+1, "avg_loss": avg_loss})
+                  metadata={"epoch": epoch+1, "avg_loss": avg_loss},
+                  store=store)
         if is_best:
             save_lora(lora_modules, str(root / "lora_best.pt"),
-                      metadata={"epoch": epoch+1, "avg_loss": avg_loss})
+                      metadata={"epoch": epoch+1, "avg_loss": avg_loss},
+                      store=store)
         save_loss_curves(step_losses, epoch_avg_losses, monitor.grad_norms, root)
 
         if monitor.should_stop():
@@ -1149,10 +1161,12 @@ def _train_grpo(net, optimizer, lora_modules, lora_params, store,
             step_losses=step_losses, grad_norms=monitor.grad_norms)
 
         save_lora(lora_modules, str(root / f"lora_epoch{epoch+1}.pt"),
-                  metadata={"epoch": epoch+1, "avg_loss": avg_loss})
+                  metadata={"epoch": epoch+1, "avg_loss": avg_loss},
+                  store=store)
         if is_best:
             save_lora(lora_modules, str(root / "lora_best.pt"),
-                      metadata={"epoch": epoch+1, "avg_loss": avg_loss})
+                      metadata={"epoch": epoch+1, "avg_loss": avg_loss},
+                      store=store)
         save_loss_curves(step_losses, epoch_avg_losses, monitor.grad_norms, root)
 
         if monitor.should_stop():
