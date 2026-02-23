@@ -1,5 +1,5 @@
 method: direct        # direct | dpo | grpo
-train_pct: 80         # % of training set to use (rest held out for eval)
+train_pct: 10         # % of training set to use (rest held out for eval)
 
 # LoRA
 lora_rank: 64
@@ -39,7 +39,7 @@ min_lr_ratio: 0.1         # cosine decay floor (fraction of base lr)
 
 # Scheduler (for DPS prefix + plain diffusion)
 diffusion_scheduler_config:
-  num_steps: 200
+  num_steps: 50
   schedule: vp
   timestep: vp
   scaling: vp
