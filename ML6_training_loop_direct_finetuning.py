@@ -19,6 +19,8 @@ import torch
 import numpy as np
 import tqdm
 import hydra
+import logging
+import sys
 import matplotlib.pyplot as plt
 import itertools
 from pathlib import Path
@@ -31,6 +33,26 @@ from model import get_model
 from sampler import get_sampler
 from lora import (apply_conditioned_lora, remove_lora, get_lora_params,
                   frozen_tweedie, save_lora)
+
+log = logging.getLogger(__name__)
+
+
+def setup_logging(log_path):
+    """Set up logging to both file and stdout."""
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    fmt = logging.Formatter("%(asctime)s | %(message)s", datefmt="%H:%M:%S")
+
+    fh = logging.FileHandler(log_path, mode="w")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(fmt)
+    root_logger.addHandler(fh)
+
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setLevel(logging.INFO)
+    sh.setFormatter(fmt)
+    root_logger.addHandler(sh)
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +215,59 @@ def train_one_config(model, images, y, operator, sampler, *,
 # Main sweep
 # ---------------------------------------------------------------------------
 
+def save_sweep_snapshot(root, all_results, num_epochs):
+    """Save current sweep results incrementally (after each config)."""
+    summary = {}
+    for tag, res in all_results.items():
+        summary[tag] = {
+            "epoch_losses": res["epoch_losses"],
+            "step_losses": res["step_losses"],
+            "up_norm": res["up_norm"],
+            "down_norm": res["down_norm"],
+            "final_loss": res["epoch_losses"][-1],
+        }
+    with open(str(root / "sweep_results.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+
+    # update plot with all completed configs so far
+    if len(all_results) < 2:
+        return
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+    ax = axes[0]
+    for tag, res in all_results.items():
+        ax.plot(res["step_losses"], alpha=0.7, label=tag)
+    ax.set_xlabel("Optimizer step")
+    ax.set_ylabel("Loss")
+    ax.set_title("Per-step loss")
+    ax.legend(fontsize=7)
+    ax.set_yscale("log")
+
+    ax = axes[1]
+    for tag, res in all_results.items():
+        ax.plot(range(1, num_epochs + 1), res["epoch_losses"], "o-", label=tag)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Avg loss")
+    ax.set_title("Per-epoch avg loss")
+    ax.legend(fontsize=7)
+    ax.set_yscale("log")
+
+    ax = axes[2]
+    tags = list(all_results.keys())
+    final_losses = [all_results[t]["epoch_losses"][-1] for t in tags]
+    colors = plt.cm.viridis(np.linspace(0, 1, len(tags)))
+    ax.bar(range(len(tags)), final_losses, color=colors)
+    ax.set_xticks(range(len(tags)))
+    ax.set_xticklabels(tags, rotation=45, ha="right", fontsize=7)
+    ax.set_ylabel("Final epoch loss")
+    ax.set_title("Final loss by config")
+    ax.set_yscale("log")
+
+    plt.tight_layout()
+    plt.savefig(str(root / "sweep_results.png"), dpi=150, bbox_inches="tight")
+    plt.close()
+
+
 @hydra.main(version_base="1.3", config_path="configs", config_name="default.yaml")
 def main(args: DictConfig):
     np.random.seed(args.seed)
@@ -201,7 +276,13 @@ def main(args: DictConfig):
     torch.backends.cudnn.deterministic = True
     torch.cuda.set_device(f"cuda:{args.gpu}")
 
-    print(yaml.dump(OmegaConf.to_container(args, resolve=True), indent=4))
+    # --- output dir (create early so we can set up logging) ---
+    root = Path(args.save_dir) / args.name
+    root.mkdir(parents=True, exist_ok=True)
+
+    setup_logging(str(root / "training.log"))
+
+    log.info(yaml.dump(OmegaConf.to_container(args, resolve=True), indent=4))
 
     # --- sweep config ---
     cfg = OmegaConf.to_container(args.get("ttt", {}), resolve=True)
@@ -237,9 +318,6 @@ def main(args: DictConfig):
                           mcmc_sampler_config=task_group.get("mcmc_sampler_config", None))
     model = get_model(**args.model)
 
-    # --- output ---
-    root = Path(args.save_dir) / args.name
-    root.mkdir(parents=True, exist_ok=True)
     with open(str(root / "config.yaml"), "w") as f:
         yaml.safe_dump(OmegaConf.to_container(args, resolve=True), f)
 
@@ -247,18 +325,18 @@ def main(args: DictConfig):
     configs = list(itertools.product(lr_list, accum_list, rank_list))
     all_results = {}
 
-    print(f"\n{'='*60}")
-    print(f"Hyperparameter sweep: {len(configs)} configs")
-    print(f"  LRs: {lr_list}")
-    print(f"  Grad accum: {accum_list}")
-    print(f"  Ranks: {rank_list}")
-    print(f"  Data: {num_images} images, {num_epochs} epochs each")
-    print(f"  DPS steps: {len(sampler.scheduler.sigma_steps)-1}, K={K}")
-    print(f"{'='*60}\n")
+    log.info(f"\n{'='*60}")
+    log.info(f"Hyperparameter sweep: {len(configs)} configs")
+    log.info(f"  LRs: {lr_list}")
+    log.info(f"  Grad accum: {accum_list}")
+    log.info(f"  Ranks: {rank_list}")
+    log.info(f"  Data: {num_images} images, {num_epochs} epochs each")
+    log.info(f"  DPS steps: {len(sampler.scheduler.sigma_steps)-1}, K={K}")
+    log.info(f"{'='*60}\n")
 
     for idx, (lr, accum, rank) in enumerate(configs):
         tag = f"lr{lr}_accum{accum}_r{rank}"
-        print(f"\n[{idx+1}/{len(configs)}] {tag}")
+        log.info(f"\n[{idx+1}/{len(configs)}] {tag}")
 
         result = train_one_config(
             model, images, y, operator, sampler,
@@ -269,74 +347,25 @@ def main(args: DictConfig):
             grad_clip=grad_clip, K=K, seed=args.seed)
 
         all_results[tag] = result
-        print(f"  Final epoch loss: {result['epoch_losses'][-1]:.1f}, "
-              f"up_norm: {result['up_norm']:.4f}")
+        log.info(f"  Final epoch loss: {result['epoch_losses'][-1]:.1f}, "
+                 f"up_norm: {result['up_norm']:.4f}")
 
-    # --- plot all loss curves ---
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-
-    # 1. Per-step loss (all configs)
-    ax = axes[0]
-    for tag, res in all_results.items():
-        ax.plot(res["step_losses"], alpha=0.7, label=tag)
-    ax.set_xlabel("Optimizer step")
-    ax.set_ylabel("Loss")
-    ax.set_title("Per-step loss")
-    ax.legend(fontsize=7)
-    ax.set_yscale("log")
-
-    # 2. Per-epoch loss (all configs)
-    ax = axes[1]
-    for tag, res in all_results.items():
-        ax.plot(range(1, num_epochs + 1), res["epoch_losses"], "o-", label=tag)
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Avg loss")
-    ax.set_title("Per-epoch avg loss")
-    ax.legend(fontsize=7)
-    ax.set_yscale("log")
-
-    # 3. Final loss vs config (bar chart)
-    ax = axes[2]
-    tags = list(all_results.keys())
-    final_losses = [all_results[t]["epoch_losses"][-1] for t in tags]
-    colors = plt.cm.viridis(np.linspace(0, 1, len(tags)))
-    bars = ax.bar(range(len(tags)), final_losses, color=colors)
-    ax.set_xticks(range(len(tags)))
-    ax.set_xticklabels(tags, rotation=45, ha="right", fontsize=7)
-    ax.set_ylabel("Final epoch loss")
-    ax.set_title("Final loss by config")
-    ax.set_yscale("log")
-
-    plt.tight_layout()
-    plt.savefig(str(root / "sweep_results.png"), dpi=150, bbox_inches="tight")
-    plt.close()
+        # save results after each config so nothing is lost on crash
+        save_sweep_snapshot(root, all_results, num_epochs)
+        log.info(f"  Snapshot saved ({len(all_results)}/{len(configs)} configs complete)")
 
     # --- summary table ---
-    print(f"\n{'='*70}")
-    print(f"{'Config':<25} {'Final Loss':>12} {'Up Norm':>10} {'Down Norm':>10}")
-    print(f"{'-'*70}")
+    log.info(f"\n{'='*70}")
+    log.info(f"{'Config':<25} {'Final Loss':>12} {'Up Norm':>10} {'Down Norm':>10}")
+    log.info(f"{'-'*70}")
     ranked = sorted(all_results.items(), key=lambda x: x[1]["epoch_losses"][-1])
     for tag, res in ranked:
-        print(f"{tag:<25} {res['epoch_losses'][-1]:>12.1f} "
-              f"{res['up_norm']:>10.4f} {res['down_norm']:>10.4f}")
-    print(f"{'-'*70}")
+        log.info(f"{tag:<25} {res['epoch_losses'][-1]:>12.1f} "
+                 f"{res['up_norm']:>10.4f} {res['down_norm']:>10.4f}")
+    log.info(f"{'-'*70}")
     best_tag = ranked[0][0]
-    print(f"Best config: {best_tag} (loss={ranked[0][1]['epoch_losses'][-1]:.1f})")
-    print(f"\nResults saved to {root}")
-    print(f"  - Sweep plot: {root / 'sweep_results.png'}")
-
-    # --- save raw results ---
-    summary = {}
-    for tag, res in all_results.items():
-        summary[tag] = {
-            "epoch_losses": res["epoch_losses"],
-            "step_losses": res["step_losses"],
-            "up_norm": res["up_norm"],
-            "down_norm": res["down_norm"],
-            "final_loss": res["epoch_losses"][-1],
-        }
-    with open(str(root / "sweep_results.json"), "w") as f:
-        json.dump(summary, f, indent=2)
+    log.info(f"Best config: {best_tag} (loss={ranked[0][1]['epoch_losses'][-1]:.1f})")
+    log.info(f"\nSweep results saved to {root}")
 
     # ===================================================================
     # Phase 2: Full-dataset training with best config
@@ -357,11 +386,11 @@ def main(args: DictConfig):
         full_images = images
         full_y = y
 
-    print(f"\n{'='*60}")
-    print(f"Phase 2: Full training with best config")
-    print(f"  Config: lr={best_lr}, grad_accum={best_accum}, rank={best_rank}")
-    print(f"  Data: {full_num_images} images, {full_num_epochs} epochs")
-    print(f"{'='*60}\n")
+    log.info(f"\n{'='*60}")
+    log.info(f"Phase 2: Full training with best config")
+    log.info(f"  Config: lr={best_lr}, grad_accum={best_accum}, rank={best_rank}")
+    log.info(f"  Data: {full_num_images} images, {full_num_epochs} epochs")
+    log.info(f"{'='*60}\n")
 
     full_save_path = str(root / "lora_final.pt")
     full_result = train_one_config(
@@ -399,10 +428,10 @@ def main(args: DictConfig):
     plt.savefig(str(root / "full_training_loss.png"), dpi=150, bbox_inches="tight")
     plt.close()
 
-    print(f"\nFull training complete!")
-    print(f"  Final loss: {full_result['epoch_losses'][-1]:.1f}")
-    print(f"  LoRA saved: {full_save_path}")
-    print(f"  Loss curve: {root / 'full_training_loss.png'}")
+    log.info(f"\nFull training complete!")
+    log.info(f"  Final loss: {full_result['epoch_losses'][-1]:.1f}")
+    log.info(f"  LoRA saved: {full_save_path}")
+    log.info(f"  Loss curve: {root / 'full_training_loss.png'}")
 
 
 if __name__ == "__main__":
