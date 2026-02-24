@@ -403,7 +403,7 @@ def main(config: DictConfig):
     optimizer = torch.optim.AdamW(classifier.parameters(), lr=lr,
                                   weight_decay=weight_decay)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=num_epochs, eta_min=lr * 0.01)
+        optimizer, T_max=max(num_epochs, 10), eta_min=lr * 0.01)
 
     # --- 6. Train ---
     step_losses = []
@@ -506,7 +506,7 @@ def main(config: DictConfig):
         logger.log(f"Epoch {epoch:3d}/{num_epochs} | "
                    f"train={avg_train_loss:.6f} | val={avg_val_loss:.6f} | "
                    f"lr={optimizer.param_groups[0]['lr']:.2e} | "
-                   f"gnorm={avg_gnorm:.2f} | time={epoch_time:.0f}s")
+                   f"gnorm={avg_gnorm:.4f} | time={epoch_time:.0f}s")
 
         # Save best
         is_best = avg_val_loss < best_val_loss
