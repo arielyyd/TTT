@@ -11,7 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from omegaconf import DictConfig, OmegaConf
 from algo.lora import load_conditioned_lora
-from algo.scheduler import Scheduler
+from utils.scheduler import Scheduler
 
 
 def plain_diffusion_sample(net, scheduler, n, device, store=None, y=None):
