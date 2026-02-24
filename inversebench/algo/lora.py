@@ -66,6 +66,10 @@ class MeasurementEncoder(nn.Module):
         self.proj = nn.Sequential(
             nn.Linear(in_dim, hidden),
             nn.GELU(),
+            nn.Linear(hidden, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, hidden),
+            nn.GELU(),
             nn.Linear(hidden, self._spatial_out),
         ).to(device)
         self._built = True
