@@ -27,24 +27,31 @@ class MeasurementEncoder(nn.Module):
     """Projects arbitrary-shape measurements to spatial feature maps.
 
     Maps measurements of any shape (e.g. [B, 20, 360] complex scattering data)
-    to [B, y_channels, img_res, img_res] spatial features that can be
+    to [B, y_channels, latent_res, latent_res] spatial features that can be
     concatenated with UNet activations in conditioned LoRA layers.
+
+    Outputs at a small latent resolution (default 8x8) to keep parameter count
+    manageable. Each LoRA layer upscales via F.interpolate to its own resolution.
 
     For complex inputs, real and imaginary parts are stacked as channels.
     """
 
-    def __init__(self, obs_shape, y_channels, img_resolution):
+    def __init__(self, obs_shape, y_channels, img_resolution, latent_res=8):
         """
         Args:
             obs_shape: Shape of a single observation *without* batch dim,
                        e.g. (20, 360) or (1, 128, 128).
             y_channels: Number of output spatial channels.
-            img_resolution: Spatial resolution of UNet (e.g. 128).
+            img_resolution: Spatial resolution of UNet (e.g. 128). Stored for
+                            reference but encoder outputs at latent_res.
+            latent_res: Spatial resolution of encoder output (default 8).
+                        Kept small to avoid huge parameter counts.
         """
         super().__init__()
         self.obs_shape = obs_shape
         self.y_channels = y_channels
         self.img_resolution = img_resolution
+        self.latent_res = latent_res
 
         # Flatten obs to a vector; double channels for complex inputs
         obs_numel = 1
@@ -53,20 +60,18 @@ class MeasurementEncoder(nn.Module):
         self.obs_numel = obs_numel
         self.is_complex = False  # set at runtime on first forward
 
-        # Two-layer MLP: flatten → hidden → y_channels * H * W
-        spatial_out = y_channels * img_resolution * img_resolution
+        # MLP: flatten → hidden → y_channels * latent_res^2
+        spatial_out = y_channels * latent_res * latent_res
         # Input dim determined on first forward (depends on complex or not)
         self._built = False
         self._y_channels = y_channels
         self._spatial_out = spatial_out
-        self._img_res = img_resolution
+        self._latent_res = latent_res
 
     def _build(self, in_dim, device):
-        hidden = min(in_dim, self._spatial_out, 2048)
+        hidden = min(in_dim, 512)
         self.proj = nn.Sequential(
             nn.Linear(in_dim, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, hidden),
             nn.GELU(),
             nn.Linear(hidden, hidden),
             nn.GELU(),
@@ -79,7 +84,7 @@ class MeasurementEncoder(nn.Module):
         Args:
             y: [B, ...] measurement tensor (real or complex).
         Returns:
-            [B, y_channels, img_res, img_res] spatial features.
+            [B, y_channels, latent_res, latent_res] spatial features.
         """
         B = y.shape[0]
         if y.is_complex():
@@ -90,8 +95,8 @@ class MeasurementEncoder(nn.Module):
         if not self._built:
             self._build(y.shape[1], y.device)
 
-        out = self.proj(y)  # [B, y_channels * H * W]
-        return out.view(B, self._y_channels, self._img_res, self._img_res)
+        out = self.proj(y)  # [B, y_channels * latent_res^2]
+        return out.view(B, self._y_channels, self._latent_res, self._latent_res)
 
 
 class MeasurementStore:
@@ -295,7 +300,7 @@ def _get_unet(net):
 
 def apply_conditioned_lora(net, rank=4, alpha=1.0, y_channels=0,
                            target_modules="all", obs_shape=None,
-                           img_resolution=None):
+                           img_resolution=None, latent_res=8):
     """Inject measurement-conditioned LoRA adapters into UNet layers.
 
     Auto-detects UNet type (ADM vs DhariwalUNet/SongUNet).
@@ -310,6 +315,8 @@ def apply_conditioned_lora(net, rank=4, alpha=1.0, y_channels=0,
                    Required when y_channels > 0 to build the encoder.
         img_resolution: Spatial resolution of the UNet (e.g. 128).
                         Required when y_channels > 0.
+        latent_res: Spatial resolution of encoder output (default 8).
+                    Kept small to avoid huge parameter counts.
 
     Returns:
         (list[LoRA modules], MeasurementStore or None)
@@ -319,7 +326,8 @@ def apply_conditioned_lora(net, rank=4, alpha=1.0, y_channels=0,
         assert obs_shape is not None, "obs_shape required when y_channels > 0"
         if img_resolution is None:
             img_resolution = net.img_resolution
-        encoder = MeasurementEncoder(obs_shape, y_channels, img_resolution)
+        encoder = MeasurementEncoder(obs_shape, y_channels, img_resolution,
+                                     latent_res=latent_res)
         store = MeasurementStore(encoder=encoder)
     else:
         store = None
@@ -509,6 +517,7 @@ def save_lora(lora_modules, path, metadata=None, store=None):
         checkpoint["encoder_state"] = enc.state_dict()
         checkpoint["obs_shape"] = list(enc.obs_shape)
         checkpoint["img_resolution"] = enc.img_resolution
+        checkpoint["latent_res"] = enc.latent_res
     if metadata is not None:
         checkpoint["metadata"] = metadata
     torch.save(checkpoint, path)
@@ -528,13 +537,14 @@ def load_conditioned_lora(net, path):
     state = checkpoint["lora_state"]
     obs_shape = checkpoint.get("obs_shape", None)
     img_resolution = checkpoint.get("img_resolution", None)
+    latent_res = checkpoint.get("latent_res", 8)
     if obs_shape is not None:
         obs_shape = tuple(obs_shape)
 
     lora_modules, store = apply_conditioned_lora(
         net, rank=rank, alpha=alpha, y_channels=y_channels,
         target_modules=target_modules, obs_shape=obs_shape,
-        img_resolution=img_resolution)
+        img_resolution=img_resolution, latent_res=latent_res)
 
     for i, m in enumerate(lora_modules):
         m.lora_down.weight.data.copy_(state[f"{i}.lora_down.weight"])
