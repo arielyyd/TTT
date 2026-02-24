@@ -38,9 +38,10 @@ from omegaconf import OmegaConf, DictConfig
 from hydra.utils import instantiate
 
 import sys
-_project_root = str(Path(__file__).resolve().parent.parent)
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
+# classifier.py lives in the repo root (same dir as this script when deployed)
+_repo_root = str(Path(__file__).resolve().parent)
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 from classifier import MeasurementPredictor, save_classifier
 from utils.helper import open_url
@@ -218,7 +219,10 @@ def evaluate_held_out(classifier, net, forward_op, eval_images,
 
         denoised = net(x_noisy, sigma)
         y_hat = forward_op({'target': denoised})
-        target = y_hat - y_batch
+        if classifier.measurement_encoder is not None:
+            target = classifier.measurement_encoder(y_hat - y_batch)
+        else:
+            target = y_hat - y_batch
         pred = classifier(x_noisy, sigma, y_batch)
 
         total_pred_loss += F.mse_loss(pred, target).item()
@@ -274,7 +278,7 @@ def main(config: DictConfig):
 
     # --- Output directory ---
     problem_name = config.problem.get("name", "unknown")
-    root = Path(save_dir) / f"{problem_name}_cbg_{train_pct}pct_lr{lr}"
+    root = Path(save_dir) / f"{problem_name}_cbg_{train_pct}pct_lr{lr}_ch{base_channels}"
     root.mkdir(parents=True, exist_ok=True)
 
     # --- Logger ---
@@ -347,20 +351,39 @@ def main(config: DictConfig):
 
     # --- 3. Infer operator output shape ---
     y_sample = measurements[:1]
-    out_channels = y_sample.shape[1]
-    out_size = (y_sample.shape[2], y_sample.shape[3])
-    logger.log(f"Operator output: channels={out_channels}, size={out_size}")
+    is_image_obs = (y_sample.ndim == 4 and not y_sample.is_complex())
+    if is_image_obs:
+        # Image-like observations: directly use channels and spatial dims
+        obs_shape = None
+        y_channels = y_sample.shape[1]
+        out_channels = y_sample.shape[1]
+        out_size = (y_sample.shape[2], y_sample.shape[3])
+        logger.log(f"Operator output (image): channels={out_channels}, "
+                   f"size={out_size}")
+    else:
+        # Non-image observations (e.g. complex scattering data):
+        # use MeasurementEncoder to project to spatial features
+        obs_shape = tuple(y_sample.shape[1:])
+        y_channels = cbg.get("y_channels", 4)
+        out_channels = y_channels
+        out_size = (net.img_resolution, net.img_resolution)
+        logger.log(f"Operator output (non-image): obs_shape={obs_shape}, "
+                   f"complex={y_sample.is_complex()}")
+        logger.log(f"  Using MeasurementEncoder -> y_channels={y_channels}, "
+                   f"out_size={out_size}")
 
     # --- 4. Build classifier ---
     classifier = MeasurementPredictor(
         in_channels=net.img_channels,
-        y_channels=out_channels,
+        y_channels=y_channels,
         out_channels=out_channels,
         out_size=out_size,
         base_channels=base_channels,
         emb_dim=emb_dim,
         channel_mult=channel_mult,
         attn_heads=attn_heads,
+        obs_shape=obs_shape,
+        img_resolution=net.img_resolution,
     ).to(device)
 
     num_params = sum(p.numel() for p in classifier.parameters())
@@ -404,7 +427,11 @@ def main(config: DictConfig):
             with torch.no_grad():
                 denoised = net(x_noisy, sigma)
                 y_hat = forward_op({'target': denoised})
-                target = y_hat - y_batch
+                if classifier.measurement_encoder is not None:
+                    # Non-image obs: encode residual to spatial form
+                    target = classifier.measurement_encoder(y_hat - y_batch)
+                else:
+                    target = y_hat - y_batch
 
             pred = classifier(x_noisy, sigma, y_batch)
             loss = F.mse_loss(pred, target)
@@ -442,7 +469,11 @@ def main(config: DictConfig):
 
                     denoised = net(x_noisy, sigma)
                     y_hat = forward_op({'target': denoised})
-                    target = y_hat - y_batch
+                    if classifier.measurement_encoder is not None:
+                        target = classifier.measurement_encoder(
+                            y_hat - y_batch)
+                    else:
+                        target = y_hat - y_batch
                     pred = classifier(x_noisy, sigma, y_batch)
                     val_loss += F.mse_loss(pred, target).item()
                     val_batches += 1

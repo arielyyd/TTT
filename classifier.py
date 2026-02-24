@@ -24,6 +24,59 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional, Tuple
+
+
+# ---------------------------------------------------------------------------
+# Measurement encoder (for non-image observations)
+# ---------------------------------------------------------------------------
+
+class MeasurementEncoder(nn.Module):
+    """Projects arbitrary-shape measurements to spatial feature maps.
+
+    Maps measurements of any shape (e.g. [B, 20, 360] complex scattering data)
+    to [B, y_channels, H, W] spatial features that can be concatenated with
+    x_t in the classifier's input conv.
+
+    For complex inputs, real and imaginary parts are stacked as channels.
+    Builds lazily on first forward (input dim depends on complex vs real).
+    """
+
+    def __init__(self, obs_shape: Tuple[int, ...], y_channels: int,
+                 img_resolution: int):
+        super().__init__()
+        self.obs_shape = obs_shape
+        self.y_channels = y_channels
+        self.img_resolution = img_resolution
+        self._spatial_out = y_channels * img_resolution * img_resolution
+        self._built = False
+        self._in_dim = None
+        # placeholder so state_dict is non-empty before build
+        self.proj = None
+
+    def _build(self, in_dim, device):
+        hidden = min(in_dim, self._spatial_out, 2048)
+        self.proj = nn.Sequential(
+            nn.Linear(in_dim, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, self._spatial_out),
+        ).to(device)
+        self._in_dim = in_dim
+        self._built = True
+
+    def forward(self, y):
+        B = y.shape[0]
+        if y.is_complex():
+            y = torch.view_as_real(y).flatten(1).float()
+        else:
+            y = y.flatten(1).float()
+
+        if not self._built:
+            self._build(y.shape[1], y.device)
+
+        out = self.proj(y)
+        return out.view(B, self.y_channels, self.img_resolution,
+                        self.img_resolution)
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +236,19 @@ class MeasurementPredictor(nn.Module):
 
     def __init__(self, in_channels=3, y_channels=3, out_channels=3,
                  out_size=256, base_channels=64, emb_dim=256,
-                 channel_mult=(1, 2, 4, 4), attn_heads=4):
+                 channel_mult=(1, 2, 4, 4), attn_heads=4,
+                 obs_shape: Optional[Tuple[int, ...]] = None,
+                 img_resolution: Optional[int] = None):
+        """
+        Args:
+            obs_shape: Shape of a single observation *without* batch dim,
+                       e.g. (20, 360) for complex scatter data. When provided,
+                       a MeasurementEncoder is built to project arbitrary
+                       observations into [B, y_channels, H, W] spatial features.
+                       When None, y is assumed to already be 4D image-like.
+            img_resolution: Spatial resolution for the encoder output. Required
+                            when obs_shape is provided. Defaults to x_t resolution.
+        """
         super().__init__()
         self.in_channels = in_channels
         self.y_channels = y_channels
@@ -192,6 +257,17 @@ class MeasurementPredictor(nn.Module):
         self.base_channels = base_channels
         self.emb_dim = emb_dim
         self.channel_mult = list(channel_mult)
+        self.obs_shape = obs_shape
+
+        # Build measurement encoder for non-image observations
+        if obs_shape is not None:
+            if img_resolution is None:
+                # Guess from out_size
+                img_resolution = self.out_size[0]
+            self.measurement_encoder = MeasurementEncoder(
+                obs_shape, y_channels, img_resolution)
+        else:
+            self.measurement_encoder = None
 
         C = base_channels
         ch_list = [C * m for m in channel_mult]  # e.g. [64, 128, 256, 256]
@@ -272,8 +348,14 @@ class MeasurementPredictor(nn.Module):
         emb = timestep_embedding(sigma_t.log(), self.emb_dim)
         emb = self.sigma_mlp(emb)                        # [B, emb_dim]
 
-        # --- resize y to match x_t spatial dims ---
-        if y.shape[-2:] != x_t.shape[-2:]:
+        # --- encode / resize y to match x_t spatial dims ---
+        if self.measurement_encoder is not None:
+            # Non-image observation: project to spatial features
+            y_in = self.measurement_encoder(y)
+            if y_in.shape[-2:] != x_t.shape[-2:]:
+                y_in = F.interpolate(y_in, size=x_t.shape[-2:],
+                                     mode='bilinear', align_corners=False)
+        elif y.ndim == 4 and y.shape[-2:] != x_t.shape[-2:]:
             y_in = F.interpolate(y, size=x_t.shape[-2:],
                                  mode='bilinear', align_corners=False)
         else:
@@ -320,18 +402,26 @@ class MeasurementPredictor(nn.Module):
 
 def save_classifier(classifier, path, metadata=None):
     """Save classifier state_dict + architecture config + optional metadata."""
+    config = {
+        'in_channels':   classifier.in_channels,
+        'y_channels':    classifier.y_channels,
+        'out_channels':  classifier.out_channels,
+        'out_size':      list(classifier.out_size),
+        'base_channels': classifier.base_channels,
+        'emb_dim':       classifier.emb_dim,
+        'channel_mult':  classifier.channel_mult,
+    }
+    if classifier.obs_shape is not None:
+        config['obs_shape'] = list(classifier.obs_shape)
+        config['img_resolution'] = classifier.measurement_encoder.img_resolution
     checkpoint = {
         'state_dict': classifier.state_dict(),
-        'config': {
-            'in_channels':   classifier.in_channels,
-            'y_channels':    classifier.y_channels,
-            'out_channels':  classifier.out_channels,
-            'out_size':      list(classifier.out_size),
-            'base_channels': classifier.base_channels,
-            'emb_dim':       classifier.emb_dim,
-            'channel_mult':  classifier.channel_mult,
-        },
+        'config': config,
     }
+    # Save encoder build info so load_classifier can rebuild before load_state_dict
+    if (classifier.measurement_encoder is not None
+            and classifier.measurement_encoder._built):
+        checkpoint['meas_enc_in_dim'] = classifier.measurement_encoder._in_dim
     if metadata:
         checkpoint.update(metadata)
     torch.save(checkpoint, path)
@@ -340,8 +430,15 @@ def save_classifier(classifier, path, metadata=None):
 def load_classifier(path, device='cuda'):
     """Reconstruct MeasurementPredictor from a saved checkpoint."""
     checkpoint = torch.load(path, map_location=device, weights_only=False)
-    config = checkpoint['config']
+    config = dict(checkpoint['config'])
+    # Convert obs_shape back to tuple if present
+    if 'obs_shape' in config:
+        config['obs_shape'] = tuple(config['obs_shape'])
     classifier = MeasurementPredictor(**config).to(device)
+    # Rebuild lazy measurement encoder before loading state_dict
+    if 'meas_enc_in_dim' in checkpoint and classifier.measurement_encoder is not None:
+        classifier.measurement_encoder._build(
+            checkpoint['meas_enc_in_dim'], device)
     classifier.load_state_dict(checkpoint['state_dict'])
     classifier.eval()
     return classifier

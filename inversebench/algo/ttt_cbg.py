@@ -20,10 +20,10 @@ from tqdm import tqdm
 from .base import Algo
 from utils.scheduler import Scheduler
 
-# Add project root to path so we can import classifier.py
-_project_root = str(Path(__file__).resolve().parents[2])
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
+# classifier.py lives in the repo root (copied there by setup script)
+_repo_root = str(Path(__file__).resolve().parents[1])
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 from classifier import load_classifier
 
