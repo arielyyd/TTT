@@ -418,6 +418,7 @@ def main(config: DictConfig):
         classifier.train()
         order = np.random.permutation(n_train)
         epoch_loss = 0.0
+        epoch_target_energy = 0.0
         num_batches = 0
 
         pbar = tqdm.tqdm(range(0, n_train, batch_size),
@@ -457,10 +458,15 @@ def main(config: DictConfig):
             optimizer.step()
 
             loss_val = loss.item()
+            # Track relative error: ||pred - target||² / ||target||²
+            with torch.no_grad():
+                target_energy = target.pow(2).mean().item()
+                rel_err = loss_val / max(target_energy, 1e-10)
             step_losses.append(loss_val)
             epoch_loss += loss_val
+            epoch_target_energy += target_energy
             num_batches += 1
-            pbar.set_postfix(loss=f"{loss_val:.6f}")
+            pbar.set_postfix(loss=f"{loss_val:.6f}", rel=f"{rel_err:.3f}")
 
         avg_train_loss = epoch_loss / max(num_batches, 1)
         epoch_train_losses.append(avg_train_loss)
@@ -503,8 +509,11 @@ def main(config: DictConfig):
         epoch_time = time.time() - t_epoch
         avg_gnorm = np.mean(grad_norms[-num_batches:]) if num_batches > 0 else 0
 
+        avg_target_energy = epoch_target_energy / max(num_batches, 1)
+        avg_rel_err = avg_train_loss / max(avg_target_energy, 1e-10)
         logger.log(f"Epoch {epoch:3d}/{num_epochs} | "
                    f"train={avg_train_loss:.6f} | val={avg_val_loss:.6f} | "
+                   f"rel_err={avg_rel_err:.3f} | "
                    f"lr={optimizer.param_groups[0]['lr']:.2e} | "
                    f"gnorm={avg_gnorm:.4f} | time={epoch_time:.0f}s")
 

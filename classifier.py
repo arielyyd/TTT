@@ -84,11 +84,14 @@ class MeasurementEncoder(nn.Module):
 # ---------------------------------------------------------------------------
 
 class MeasurementDecoder(nn.Module):
-    """Maps spatial UNet output back to measurement space.
+    """Maps spatial UNet features back to measurement space.
 
-    Uses adaptive average pooling to reduce spatial dims, then an MLP
-    to project to the flat measurement dimension. This keeps param count
-    manageable even for high-res spatial outputs.
+    Applied *before* the UNet's out_conv so it receives base_channels
+    (e.g. 64) rather than out_channels (e.g. 1), avoiding a severe
+    information bottleneck.
+
+    Architecture: AdaptiveAvgPool2d → Flatten → Linear → GELU → Linear
+    With base_channels=64, pool_size=8: pool_dim=4096 → 512 → meas_flat_dim
     """
 
     def __init__(self, in_channels: int, meas_flat_dim: int, pool_size: int = 8):
@@ -96,12 +99,12 @@ class MeasurementDecoder(nn.Module):
         self.meas_flat_dim = meas_flat_dim
         self.pool = nn.AdaptiveAvgPool2d(pool_size)
         pool_dim = in_channels * pool_size * pool_size
-        hidden = min(max(pool_dim, 512), 2048)
+        bottleneck = min(pool_dim, 512)
         self.proj = nn.Sequential(
             nn.Flatten(1),
-            nn.Linear(pool_dim, hidden),
+            nn.Linear(pool_dim, bottleneck),
             nn.GELU(),
-            nn.Linear(hidden, meas_flat_dim),
+            nn.Linear(bottleneck, meas_flat_dim),
         )
 
     def forward(self, h):
@@ -304,9 +307,10 @@ class MeasurementPredictor(nn.Module):
             self.measurement_encoder = None
 
         # Build measurement decoder to project spatial output to measurement space
+        # Uses base_channels (not out_channels) because it's applied before out_conv
         if obs_shape is not None and meas_flat_dim is not None:
             self.measurement_decoder = MeasurementDecoder(
-                out_channels, meas_flat_dim)
+                base_channels, meas_flat_dim)
         else:
             self.measurement_decoder = None
 
@@ -427,6 +431,13 @@ class MeasurementPredictor(nn.Module):
         # --- output ---
         h = self.out_norm(h)
         h = self.out_act(h)
+
+        # --- decode to measurement space if decoder exists ---
+        # Applied BEFORE out_conv so decoder gets base_channels features (e.g. 64)
+        # instead of out_channels (e.g. 1) — avoids information bottleneck
+        if self.measurement_decoder is not None:
+            return self.measurement_decoder(h)  # [B, meas_flat_dim]
+
         h = self.out_conv(h)                              # [B, out_ch, 256, 256]
 
         # --- resize to target output size ---
@@ -434,10 +445,6 @@ class MeasurementPredictor(nn.Module):
         if h.shape[-2:] != (out_h, out_w):
             h = F.interpolate(h, size=(out_h, out_w),
                               mode='bilinear', align_corners=False)
-
-        # --- decode to measurement space if decoder exists ---
-        if self.measurement_decoder is not None:
-            return self.measurement_decoder(h)  # [B, meas_flat_dim]
         return h
 
 
