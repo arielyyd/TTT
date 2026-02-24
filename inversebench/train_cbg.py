@@ -219,10 +219,14 @@ def evaluate_held_out(classifier, net, forward_op, eval_images,
 
         denoised = net(x_noisy, sigma)
         y_hat = forward_op({'target': denoised})
-        if classifier.measurement_encoder is not None:
-            target = classifier.measurement_encoder(y_hat - y_batch)
+        residual = y_hat - y_batch
+        if classifier.measurement_decoder is not None:
+            if residual.is_complex():
+                target = torch.view_as_real(residual).flatten(1).float()
+            else:
+                target = residual.flatten(1).float()
         else:
-            target = y_hat - y_batch
+            target = residual
         pred = classifier(x_noisy, sigma, y_batch)
 
         total_pred_loss += F.mse_loss(pred, target).item()
@@ -367,8 +371,13 @@ def main(config: DictConfig):
         y_channels = cbg.get("y_channels", 4)
         out_channels = y_channels
         out_size = (net.img_resolution, net.img_resolution)
+        # Compute flat measurement dim for decoder (complex -> view_as_real doubles)
+        if y_sample.is_complex():
+            meas_flat_dim = y_sample[0].numel() * 2
+        else:
+            meas_flat_dim = y_sample[0].numel()
         logger.log(f"Operator output (non-image): obs_shape={obs_shape}, "
-                   f"complex={y_sample.is_complex()}")
+                   f"complex={y_sample.is_complex()}, meas_flat_dim={meas_flat_dim}")
         logger.log(f"  Using MeasurementEncoder -> y_channels={y_channels}, "
                    f"out_size={out_size}")
 
@@ -384,6 +393,7 @@ def main(config: DictConfig):
         attn_heads=attn_heads,
         obs_shape=obs_shape,
         img_resolution=net.img_resolution,
+        meas_flat_dim=meas_flat_dim if not is_image_obs else None,
     ).to(device)
 
     num_params = sum(p.numel() for p in classifier.parameters())
@@ -427,11 +437,15 @@ def main(config: DictConfig):
             with torch.no_grad():
                 denoised = net(x_noisy, sigma)
                 y_hat = forward_op({'target': denoised})
-                if classifier.measurement_encoder is not None:
-                    # Non-image obs: encode residual to spatial form
-                    target = classifier.measurement_encoder(y_hat - y_batch)
+                residual = y_hat - y_batch
+                if classifier.measurement_decoder is not None:
+                    # Non-image obs: flatten residual to real for measurement-space loss
+                    if residual.is_complex():
+                        target = torch.view_as_real(residual).flatten(1).float()
+                    else:
+                        target = residual.flatten(1).float()
                 else:
-                    target = y_hat - y_batch
+                    target = residual
 
             pred = classifier(x_noisy, sigma, y_batch)
             loss = F.mse_loss(pred, target)
@@ -469,11 +483,14 @@ def main(config: DictConfig):
 
                     denoised = net(x_noisy, sigma)
                     y_hat = forward_op({'target': denoised})
-                    if classifier.measurement_encoder is not None:
-                        target = classifier.measurement_encoder(
-                            y_hat - y_batch)
+                    residual = y_hat - y_batch
+                    if classifier.measurement_decoder is not None:
+                        if residual.is_complex():
+                            target = torch.view_as_real(residual).flatten(1).float()
+                        else:
+                            target = residual.flatten(1).float()
                     else:
-                        target = y_hat - y_batch
+                        target = residual
                     pred = classifier(x_noisy, sigma, y_batch)
                     val_loss += F.mse_loss(pred, target).item()
                     val_batches += 1

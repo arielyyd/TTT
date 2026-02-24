@@ -80,6 +80,35 @@ class MeasurementEncoder(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# Measurement decoder (spatial -> measurement space)
+# ---------------------------------------------------------------------------
+
+class MeasurementDecoder(nn.Module):
+    """Maps spatial UNet output back to measurement space.
+
+    Uses adaptive average pooling to reduce spatial dims, then an MLP
+    to project to the flat measurement dimension. This keeps param count
+    manageable even for high-res spatial outputs.
+    """
+
+    def __init__(self, in_channels: int, meas_flat_dim: int, pool_size: int = 8):
+        super().__init__()
+        self.meas_flat_dim = meas_flat_dim
+        self.pool = nn.AdaptiveAvgPool2d(pool_size)
+        pool_dim = in_channels * pool_size * pool_size
+        hidden = min(max(pool_dim, 512), 2048)
+        self.proj = nn.Sequential(
+            nn.Flatten(1),
+            nn.Linear(pool_dim, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, meas_flat_dim),
+        )
+
+    def forward(self, h):
+        return self.proj(self.pool(h))
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -238,7 +267,8 @@ class MeasurementPredictor(nn.Module):
                  out_size=256, base_channels=64, emb_dim=256,
                  channel_mult=(1, 2, 4, 4), attn_heads=4,
                  obs_shape: Optional[Tuple[int, ...]] = None,
-                 img_resolution: Optional[int] = None):
+                 img_resolution: Optional[int] = None,
+                 meas_flat_dim: Optional[int] = None):
         """
         Args:
             obs_shape: Shape of a single observation *without* batch dim,
@@ -248,6 +278,10 @@ class MeasurementPredictor(nn.Module):
                        When None, y is assumed to already be 4D image-like.
             img_resolution: Spatial resolution for the encoder output. Required
                             when obs_shape is provided. Defaults to x_t resolution.
+            meas_flat_dim: Flat dimension of real-valued measurements. When
+                           provided with obs_shape, a MeasurementDecoder maps
+                           UNet output back to measurement space so the loss
+                           is computed there (not in the inflated spatial space).
         """
         super().__init__()
         self.in_channels = in_channels
@@ -258,16 +292,23 @@ class MeasurementPredictor(nn.Module):
         self.emb_dim = emb_dim
         self.channel_mult = list(channel_mult)
         self.obs_shape = obs_shape
+        self.meas_flat_dim = meas_flat_dim
 
         # Build measurement encoder for non-image observations
         if obs_shape is not None:
             if img_resolution is None:
-                # Guess from out_size
                 img_resolution = self.out_size[0]
             self.measurement_encoder = MeasurementEncoder(
                 obs_shape, y_channels, img_resolution)
         else:
             self.measurement_encoder = None
+
+        # Build measurement decoder to project spatial output to measurement space
+        if obs_shape is not None and meas_flat_dim is not None:
+            self.measurement_decoder = MeasurementDecoder(
+                out_channels, meas_flat_dim)
+        else:
+            self.measurement_decoder = None
 
         C = base_channels
         ch_list = [C * m for m in channel_mult]  # e.g. [64, 128, 256, 256]
@@ -393,6 +434,10 @@ class MeasurementPredictor(nn.Module):
         if h.shape[-2:] != (out_h, out_w):
             h = F.interpolate(h, size=(out_h, out_w),
                               mode='bilinear', align_corners=False)
+
+        # --- decode to measurement space if decoder exists ---
+        if self.measurement_decoder is not None:
+            return self.measurement_decoder(h)  # [B, meas_flat_dim]
         return h
 
 
@@ -414,6 +459,8 @@ def save_classifier(classifier, path, metadata=None):
     if classifier.obs_shape is not None:
         config['obs_shape'] = list(classifier.obs_shape)
         config['img_resolution'] = classifier.measurement_encoder.img_resolution
+    if classifier.meas_flat_dim is not None:
+        config['meas_flat_dim'] = classifier.meas_flat_dim
     checkpoint = {
         'state_dict': classifier.state_dict(),
         'config': config,
