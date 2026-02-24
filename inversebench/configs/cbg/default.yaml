@@ -1,0 +1,22 @@
+# CBG (Classifier-Based Guidance) training defaults
+
+# Architecture
+base_channels: 64
+channel_mult: [1, 2, 4, 4]
+emb_dim: 256
+attn_heads: 4
+
+# Training
+lr: 1e-4
+weight_decay: 1e-4
+batch_size: 8
+num_epochs: 50
+grad_clip: 1.0
+
+# Data
+train_pct: 10
+val_fraction: 0.1
+
+# Checkpointing
+save_every: 10
+save_dir: exps/cbg

@@ -1,0 +1,12 @@
+type: cbg_dps
+latent: False
+
+scheduler_config:
+  name: 'edm'
+  num_steps: 1000
+  sigma_max: 80
+  sigma_min: 0.002
+  timestep: 'poly-7'
+
+guidance_scale: 1.0
+classifier_path: null  # Set at runtime: +sampler.classifier_path=<path>

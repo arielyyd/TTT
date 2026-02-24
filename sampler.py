@@ -19,6 +19,15 @@ def get_sampler(**kwargs):
             return LatentDPS(**kwargs)
         return DPS(**kwargs)
 
+    if sampler_type == 'cbg_dps':
+        kwargs.pop('mcmc_sampler_config', None)
+        classifier_path = kwargs.pop('classifier_path', None)
+        classifier = None
+        if classifier_path:
+            from classifier import load_classifier
+            classifier = load_classifier(classifier_path)
+        return CBGDPS(classifier=classifier, **kwargs)
+
     # Default: DAPS
     if latent:
         return LatentDAPS(**kwargs)
@@ -398,4 +407,104 @@ class LatentDPS(DPS):
         # Return data-space result
         with torch.no_grad():
             xt = model.decode(zt)
+        return xt
+
+
+class CBGDPS(DPS):
+    """
+    Classifier-Based Guidance DPS.
+
+    Replaces the expensive DPS gradient (through the full diffusion model +
+    forward operator) with a cheap gradient through a small
+    MeasurementPredictor network.
+
+    The classifier M_phi(x_t, sigma, y) predicts the measurement residual
+    A(Tweedie(x_t)) - y.  At inference the guidance loss is
+    ||M_phi(x_t, sigma, y)||^2 and its gradient only flows through the
+    ~5-10M param classifier, not the ~300M param diffusion model.
+    """
+
+    def __init__(self, scheduler_config, guidance_scale=1.0, classifier=None):
+        super().__init__(scheduler_config, guidance_scale)
+        self.classifier = classifier
+
+    def set_classifier(self, classifier):
+        """Attach a trained MeasurementPredictor for inference."""
+        self.classifier = classifier
+
+    def sample(self, model, x_start, operator, measurement,
+               evaluator=None, record=False, verbose=False, **kwargs):
+        if self.classifier is None:
+            raise RuntimeError("CBGDPS requires a trained classifier. "
+                               "Call set_classifier() or pass classifier_path "
+                               "in the config.")
+        if record:
+            self.trajectory = Trajectory()
+
+        sigma_steps = self.scheduler.sigma_steps
+        num_steps = len(sigma_steps) - 1
+        pbar = tqdm.trange(num_steps) if verbose else range(num_steps)
+        xt = x_start
+
+        for step in pbar:
+            sigma = sigma_steps[step]
+            sigma_next = sigma_steps[step + 1]
+            t = self.scheduler.get_sigma_inv(sigma)
+            t_next = self.scheduler.get_sigma_inv(sigma_next)
+            dt = t_next - t
+            st = self.scheduler.get_scaling(t)
+            dst = self.scheduler.get_scaling_derivative(t)
+            dsigma = self.scheduler.get_sigma_derivative(t)
+
+            # 1. Tweedie for PF-ODE (no grad — huge memory saving)
+            with torch.no_grad():
+                x0hat = model.tweedie(xt / st, sigma)
+
+            # 2. Classifier gradient (grad only through small network)
+            xt_in = xt.detach().requires_grad_(True)
+            pred_residual = self.classifier(xt_in / st, sigma, measurement)
+            loss_per_sample = pred_residual.pow(2).flatten(1).sum(-1)  # [B]
+            grad_xt = torch.autograd.grad(loss_per_sample.sum(), xt_in)[0]
+
+            # 3. Per-sample normalization (same as DPS)
+            with torch.no_grad():
+                norm_factor = loss_per_sample.sqrt()
+                norm_factor = norm_factor.view(-1, *([1] * (grad_xt.ndim - 1)))
+                norm_factor = norm_factor.clamp(min=1e-8)
+                normalized_grad = grad_xt / norm_factor
+
+            # 4. PF-ODE Euler step (using x0hat from step 1)
+            with torch.no_grad():
+                score = (x0hat - xt / st) / sigma ** 2
+                deriv = dst / st * xt - st * dsigma * sigma * score
+                xt_next = xt + dt * deriv
+
+                # Apply guidance
+                xt = xt_next - self.guidance_scale * normalized_grad
+
+                # NaN guard
+                if torch.isnan(xt).any():
+                    if verbose:
+                        print(f'NaN detected at step {step}, returning early.')
+                    break
+
+            # --- evaluation ---
+            x0hat_eval = x0hat.detach()
+            x0hat_results = x0y_results = {}
+            if evaluator and 'gt' in kwargs:
+                with torch.no_grad():
+                    gt = kwargs['gt']
+                    x0hat_results = evaluator(gt, measurement, x0hat_eval)
+                    x0y_results = x0hat_results
+
+                if verbose:
+                    main_eval_fn_name = evaluator.main_eval_fn_name
+                    pbar.set_postfix({
+                        'x0hat_' + main_eval_fn_name:
+                            f"{x0hat_results[main_eval_fn_name].item():.2f}",
+                    })
+            if record:
+                self._record(xt, x0hat_eval, x0hat_eval,
+                             sigma, x0hat_results, x0y_results)
+
         return xt

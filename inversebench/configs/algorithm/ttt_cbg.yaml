@@ -1,0 +1,11 @@
+name: TTT-CBG
+method:
+  _target_: algo.ttt_cbg.TTTCBG
+  classifier_path: exps/cbg/classifier_final.pt
+  diffusion_scheduler_config:
+    num_steps: 200
+    schedule: vp
+    timestep: vp
+    scaling: vp
+  guidance_scale: 1.0
+  sde: False
