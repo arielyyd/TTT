@@ -71,7 +71,7 @@ if [ ! -d ".venv" ]; then
 fi
 source .venv/bin/activate
 echo ">>> Installing dependencies..."
-uv pip install -e .
+uv pip install torch torchvision hydra-core omegaconf lmdb numpy tqdm pyyaml matplotlib piq
 
 # --- 4. Download inv-scatter model checkpoint ---
 mkdir -p checkpoints
