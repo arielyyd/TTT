@@ -2,8 +2,8 @@
 
 Usage:
     python quick_eval.py problem=inv-scatter pretrain=inv-scatter \
-        +lora_path=exps/ttt/inverse-scatter-linear_direct_10pct_lr0.003_kl0.01_ych4/lora_final.pt \
-        +num_samples=8 +out=quick_eval.png
+        +ttt.lora_path=exps/ttt/.../lora_final.pt \
+        +ttt.num_eval=8 +ttt.eval_out=quick_eval.png
 """
 import hydra
 import torch
@@ -39,9 +39,10 @@ def main(config: DictConfig):
     torch.set_float32_matmul_precision("high")
     torch.manual_seed(42)
 
-    lora_path = config.get("lora_path")
-    num_samples = config.get("num_samples", 8)
-    out_path = config.get("out", "quick_eval.png")
+    ttt = OmegaConf.to_container(config.get("ttt", {}), resolve=True)
+    lora_path = ttt.get("lora_path")
+    num_samples = ttt.get("num_eval", 8)
+    out_path = ttt.get("eval_out", "quick_eval.png")
     sched_cfg = {"num_steps": 50, "schedule": "vp", "timestep": "vp", "scaling": "vp"}
 
     # Load model
