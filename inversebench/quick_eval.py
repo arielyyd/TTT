@@ -7,9 +7,12 @@ Usage:
 """
 import hydra
 import torch
+import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 from omegaconf import DictConfig, OmegaConf
+from hydra.utils import instantiate
+from torch_utils.misc import open_url
 from algo.lora import load_conditioned_lora
 from utils.scheduler import Scheduler
 
@@ -45,15 +48,29 @@ def main(config: DictConfig):
     out_path = ttt.get("eval_out", "quick_eval.png")
     sched_cfg = {"num_steps": 50, "schedule": "vp", "timestep": "vp", "scaling": "vp"}
 
-    # Load model
+    # Load model (same as train_ttt.py)
     print("Loading model...")
-    net = hydra.utils.instantiate(config.problem.prior).to(device).eval()
-    forward_op = hydra.utils.instantiate(config.problem.model)
+    forward_op = instantiate(config.problem.model, device=device)
+    ckpt_path = config.problem.prior
+    try:
+        with open_url(ckpt_path, 'rb') as f:
+            ckpt = pickle.load(f)
+            net = ckpt['ema'].to(device)
+    except Exception:
+        net = instantiate(config.pretrain.model)
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        if 'ema' in ckpt.keys():
+            net.load_state_dict(ckpt['ema'])
+        else:
+            net.load_state_dict(ckpt['net'])
+        net = net.to(device)
+    del ckpt
+    net.eval()
     scheduler = Scheduler(**sched_cfg)
 
     # Load dataset
     print("Loading dataset...")
-    dataset = hydra.utils.instantiate(config.problem.data)
+    dataset = instantiate(config.pretrain.data)
     N = len(dataset)
 
     # Pick random eval indices
