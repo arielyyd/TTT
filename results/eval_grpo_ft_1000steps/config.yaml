@@ -1,0 +1,113 @@
+batch_size: 10
+data:
+  end_id: 10
+  name: image
+  resolution: 256
+  root: dataset/demo-ffhq
+  start_id: 0
+eval:
+  lora_path: results/grpo_ft_1000steps/lora_final.pt
+eval_fid: false
+eval_fn_list:
+- psnr
+- ssim
+- lpips
+gpu: 1
+model:
+  model_config:
+    attention_resolutions: 16
+    channel_mult: ''
+    class_cond: false
+    dropout: 0.0
+    image_size: 256
+    learn_sigma: true
+    model_path: checkpoints/ffhq256.pt
+    num_channels: 128
+    num_head_channels: 64
+    num_heads: 4
+    num_heads_upsample: -1
+    num_res_blocks: 1
+    resblock_updown: true
+    use_checkpoint: false
+    use_fp16: false
+    use_new_attention_order: false
+    use_scale_shift_norm: true
+  name: ddpm
+name: eval_grpo_ft_1000steps
+num_runs: 1
+project_name: DAPS
+sampler:
+  guidance_scale: 1.0
+  latent: false
+  scheduler_config:
+    name: edm
+    num_steps: 1000
+    sigma_max: 80
+    sigma_min: 0.002
+    timestep: poly-7
+  type: dps
+save_dir: results
+save_samples: true
+save_traj: true
+save_traj_raw_data: false
+save_traj_video: false
+seed: 42
+show_eval: false
+task:
+  ldm:
+    mcmc_sampler_config:
+      lr: 2.7e-06
+      lr_min_ratio: 0.95
+      mc_algo: hmc
+      momentum: 0.95
+      num_steps: 35
+      prior_solver: gaussian
+      tau: 0.01
+    operator:
+      intensity: 3.0
+      kernel_size: 61
+      name: gaussian_blur
+      sigma: 0.05
+  pixel:
+    mcmc_sampler_config:
+      lr: 0.0001
+      lr_min_ratio: 0.01
+      mc_algo: langevin
+      num_steps: 100
+      prior_solver: gaussian
+      tau: 0.01
+    operator:
+      intensity: 3.0
+      kernel_size: 61
+      name: gaussian_blur
+      sigma: 0.05
+  pixel_hmc:
+    mcmc_sampler_config:
+      lr: 4.04e-05
+      lr_min_ratio: 0.011
+      mc_algo: hmc
+      momentum: 0.1
+      num_steps: 82
+      prior_solver: gaussian
+      tau: 0.01
+    operator:
+      intensity: 3.0
+      kernel_size: 61
+      name: gaussian_blur
+      sigma: 0.05
+  sd:
+    mcmc_sampler_config:
+      lr: 1.0e-05
+      lr_min_ratio: 1
+      mc_algo: hmc
+      momentum: 0.9
+      num_steps: 40
+      prior_solver: gaussian
+      tau: 0.01
+    operator:
+      intensity: 3.0
+      kernel_size: 61
+      name: gaussian_blur
+      sigma: 0.01
+task_group: pixel
+wandb: false

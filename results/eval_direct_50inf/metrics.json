@@ -1,0 +1,95 @@
+{
+  "lora_path": "results/direct_ft_50inf/lora_final.pt",
+  "num_images": 10,
+  "skip_baseline": true,
+  "aggregate": {
+    "psnr": {
+      "lora_mean": 9.47208776473999,
+      "lora_std": 0.940117781328931
+    },
+    "ssim": {
+      "lora_mean": 0.2393490269780159,
+      "lora_std": 0.09887624630531609
+    },
+    "lpips": {
+      "lora_mean": 0.6663085043430328,
+      "lora_std": 0.07403949034322448
+    },
+    "meas_l2": {
+      "lora_mean": 81863.153125,
+      "lora_std": 18461.187067842086
+    }
+  },
+  "per_image": [
+    {
+      "image_idx": 0,
+      "psnr_lora": 10.652063369750977,
+      "ssim_lora": 0.34864839911460876,
+      "lpips_lora": 0.5780675411224365,
+      "meas_l2_lora": 61493.8515625
+    },
+    {
+      "image_idx": 1,
+      "psnr_lora": 9.55890941619873,
+      "ssim_lora": 0.2154601514339447,
+      "lpips_lora": 0.714413046836853,
+      "meas_l2_lora": 81536.3671875
+    },
+    {
+      "image_idx": 2,
+      "psnr_lora": 10.51511001586914,
+      "ssim_lora": 0.4295036494731903,
+      "lpips_lora": 0.5526949763298035,
+      "meas_l2_lora": 65026.90625
+    },
+    {
+      "image_idx": 3,
+      "psnr_lora": 10.439937591552734,
+      "ssim_lora": 0.18620923161506653,
+      "lpips_lora": 0.5872991681098938,
+      "meas_l2_lora": 61160.21875
+    },
+    {
+      "image_idx": 4,
+      "psnr_lora": 9.230639457702637,
+      "ssim_lora": 0.19952696561813354,
+      "lpips_lora": 0.6938897371292114,
+      "meas_l2_lora": 78841.390625
+    },
+    {
+      "image_idx": 5,
+      "psnr_lora": 7.7829999923706055,
+      "ssim_lora": 0.1384172886610031,
+      "lpips_lora": 0.6874172687530518,
+      "meas_l2_lora": 120055.265625
+    },
+    {
+      "image_idx": 6,
+      "psnr_lora": 8.114115715026855,
+      "ssim_lora": 0.07146817445755005,
+      "lpips_lora": 0.7109937071800232,
+      "meas_l2_lora": 104898.609375
+    },
+    {
+      "image_idx": 7,
+      "psnr_lora": 9.421378135681152,
+      "ssim_lora": 0.22327837347984314,
+      "lpips_lora": 0.8024846315383911,
+      "meas_l2_lora": 82916.734375
+    },
+    {
+      "image_idx": 8,
+      "psnr_lora": 8.9310941696167,
+      "ssim_lora": 0.2702453136444092,
+      "lpips_lora": 0.7115890383720398,
+      "meas_l2_lora": 93205.0625
+    },
+    {
+      "image_idx": 9,
+      "psnr_lora": 10.074629783630371,
+      "ssim_lora": 0.31073272228240967,
+      "lpips_lora": 0.6242359280586243,
+      "meas_l2_lora": 69497.125
+    }
+  ]
+}
