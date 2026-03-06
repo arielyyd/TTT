@@ -24,6 +24,7 @@ import random
 import yaml
 import torch
 import numpy as np
+import tqdm
 import hydra
 from pathlib import Path
 from omegaconf import OmegaConf, DictConfig
@@ -53,7 +54,8 @@ def dps_draft_k_sample_diag(model, scheduler, forward_op, y, device,
 
     diag = {"dps_loss": [], "dps_grad_norm": [], "phase": []}
 
-    for i in range(num_steps):
+    pbar = tqdm.trange(num_steps, desc="DRaFT sample", leave=False)
+    for i in pbar:
         sigma = sigma_steps[i]
         sigma_next = sigma_steps[i + 1]
         t = scheduler.get_sigma_inv(sigma)
@@ -74,6 +76,7 @@ def dps_draft_k_sample_diag(model, scheduler, forward_op, y, device,
             diag["dps_loss"].append(loss_dps.item())
             diag["dps_grad_norm"].append(grad_xt.norm().item())
             diag["phase"].append("prefix")
+            pbar.set_postfix(phase="prefix", loss=f"{loss_dps.item():.2f}")
 
             with torch.no_grad():
                 norm_factor = loss_dps.sqrt().view(
@@ -100,6 +103,7 @@ def dps_draft_k_sample_diag(model, scheduler, forward_op, y, device,
             diag["dps_loss"].append(loss_dps.item())
             diag["dps_grad_norm"].append(grad_xt.norm().item())
             diag["phase"].append("suffix")
+            pbar.set_postfix(phase="suffix", loss=f"{loss_dps.item():.4f}")
 
             score = (x0hat - x / st) / sigma ** 2
             deriv = dst / st * x - st * dsigma * sigma * score
@@ -161,7 +165,7 @@ def dps_sample_clean(model, scheduler, forward_op, y, device,
     x = torch.randn(1, *in_shape, device=device) * scheduler.get_prior_sigma()
     sigma_steps = scheduler.sigma_steps
     num_steps = len(sigma_steps) - 1
-    for i in range(num_steps):
+    for i in tqdm.trange(num_steps, desc="Final DPS sample", leave=False):
         sigma = sigma_steps[i]
         sigma_next = sigma_steps[i + 1]
         t = scheduler.get_sigma_inv(sigma)
@@ -252,7 +256,7 @@ def main(args: DictConfig):
     print("\n--- DPS Baseline ---")
     torch.manual_seed(args.seed)
     x_baseline = sampler.sample(model, sampler.get_start(1, model),
-                                operator, y, verbose=False)
+                                operator, y, verbose=True)
     with torch.no_grad():
         metrics_base = evaluator(gt, y, x_baseline)
         meas_base = operator.loss(x_baseline, y).mean()
@@ -317,6 +321,8 @@ def main(args: DictConfig):
         grad_norm_post = torch.cat([p.grad.flatten() for p in lora_params
                                     if p.grad is not None]).norm().item()
         optimizer.step()
+
+        buffer_D.add(x_0.detach(), y)
 
         # --- LoRA weight stats ---
         w_now = torch.cat([p.detach().flatten() for p in lora_params])

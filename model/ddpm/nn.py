@@ -151,20 +151,30 @@ class CheckpointFunction(th.autograd.Function):
 
     @staticmethod
     def backward(ctx, *output_grads):
-        ctx.input_tensors = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
+        # Use local variables — don't mutate ctx so retain_graph re-entry works.
+        input_tensors = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
         with th.enable_grad():
-            # Fixes a bug where the first op in run_function modifies the
-            # Tensor storage in place, which is not allowed for detach()'d
-            # Tensors.
-            shallow_copies = [x.view_as(x) for x in ctx.input_tensors]
+            shallow_copies = [x.view_as(x) for x in input_tensors]
             output_tensors = ctx.run_function(*shallow_copies)
+        # Filter out params that don't require grad (e.g. frozen non-LoRA
+        # params) — autograd.grad errors on requires_grad=False tensors.
+        grad_params = [p for p in ctx.input_params if p.requires_grad]
         input_grads = th.autograd.grad(
             output_tensors,
-            ctx.input_tensors + ctx.input_params,
+            input_tensors + grad_params,
             output_grads,
             allow_unused=True,
         )
-        del ctx.input_tensors
-        del ctx.input_params
+        # Reconstruct full grad tuple: None for params that were filtered out.
+        n_inputs = len(input_tensors)
+        param_grads = list(input_grads[n_inputs:])
+        full_param_grads = []
+        gi = 0
+        for p in ctx.input_params:
+            if p.requires_grad:
+                full_param_grads.append(param_grads[gi])
+                gi += 1
+            else:
+                full_param_grads.append(None)
         del output_tensors
-        return (None, None) + input_grads
+        return (None, None) + input_grads[:n_inputs] + tuple(full_param_grads)
